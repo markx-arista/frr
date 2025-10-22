@@ -70,22 +70,15 @@ static void if_zebra_speed_update(struct event *thread)
 
 	new_speed = kernel_get_speed(ifp, &error);
 
-	/* error may indicate vrf not available or
-	 * interfaces not available.
-	 * note that loopback & virtual interfaces can return 0 as speed
-	 */
-	if (error == INTERFACE_SPEED_ERROR_READ)
-		return;
-
-	if (new_speed != ifp->speed) {
+	if (error == 0 && new_speed != 0 && new_speed != ifp->speed) {
 		zlog_info("%s: %s old speed: %u new speed: %u", __func__,
 			  ifp->name, ifp->speed, new_speed);
 		if_update_state_speed(ifp, new_speed);
-		if_add_update(ifp);
+		zebra_interface_add_update(ifp);
 		changed = true;
 	}
 
-	if (changed || error == INTERFACE_SPEED_ERROR_UNKNOWN) {
+	if (changed || error || new_speed == 0) {
 #define SPEED_UPDATE_SLEEP_TIME 5
 #define SPEED_UPDATE_COUNT_MAX (4 * 60 / SPEED_UPDATE_SLEEP_TIME)
 		/*
@@ -100,8 +93,7 @@ static void if_zebra_speed_update(struct event *thread)
 		 * to not update the system to keep track of that.  This
 		 * is far simpler to just stop trying after 4 minutes
 		 */
-		if (error == INTERFACE_SPEED_ERROR_UNKNOWN &&
-		    zif->speed_update_count == SPEED_UPDATE_COUNT_MAX)
+		if (zif->speed_update_count == SPEED_UPDATE_COUNT_MAX)
 			return;
 
 		zif->speed_update_count++;
@@ -155,18 +147,6 @@ static int if_zebra_new_hook(struct interface *ifp)
 		route_table_init_with_delegate(&zebra_if_table_delegate);
 
 	ifp->info = zebra_if;
-
-	/*
-	 * Some platforms are telling us that the interface is
-	 * up and ready to go.  When we check the speed we
-	 * sometimes get the wrong value.  Wait a couple
-	 * of seconds and ask again.  Hopefully it's all settled
-	 * down upon startup.
-	 */
-	zebra_if->speed_update_count = 0;
-	event_add_timer(zrouter.master, if_zebra_speed_update, ifp, 15,
-			&zebra_if->speed_update);
-	event_ignore_late_timer(zebra_if->speed_update);
 
 	return 0;
 }
@@ -2003,6 +1983,18 @@ static void zebra_if_dplane_ifp_handling(struct zebra_dplane_ctx *ctx)
 
 			/* Inform clients, install any configured addresses. */
 			if_add_update(ifp);
+
+			/*
+			 * Some platforms are telling us that the interface is
+			 * up and ready to go.  When we check the speed we
+			 * sometimes get the wrong value.  Wait a couple
+			 * of seconds and ask again.  Hopefully it's all settled
+			 * down upon startup.
+			 */
+			zif->speed_update_count = 0;
+			event_add_timer(zrouter.master, if_zebra_speed_update, ifp, 5,
+					&zif->speed_update);
+			event_ignore_late_timer(zif->speed_update);
 
 			/*
 			 * Extract and save L2 interface information, take
