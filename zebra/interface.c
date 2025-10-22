@@ -69,8 +69,11 @@ static void if_zebra_speed_update(struct event *thread)
 	int error = 0;
 
 	new_speed = kernel_get_speed(ifp, &error);
-
-	if (error == 0 && new_speed != 0 && new_speed != ifp->speed) {
+	/* error may indicate vrf not available or
+	 * interfaces not available.
+	 * note that loopback & virtual interfaces can return 0 as speed
+	 */
+	if (error == 0 && new_speed != ifp->speed) {
 		zlog_info("%s: %s old speed: %u new speed: %u", __func__,
 			  ifp->name, ifp->speed, new_speed);
 		if_update_state_speed(ifp, new_speed);
@@ -78,7 +81,7 @@ static void if_zebra_speed_update(struct event *thread)
 		changed = true;
 	}
 
-	if (changed || error || new_speed == 0) {
+	if (changed || error) {
 #define SPEED_UPDATE_SLEEP_TIME 5
 #define SPEED_UPDATE_COUNT_MAX (4 * 60 / SPEED_UPDATE_SLEEP_TIME)
 		/*
